@@ -3,6 +3,33 @@ import type { Env } from '../index.js';
 
 const images = new Hono<Env>();
 
+function decodeKeyForPublicPolicy(key: string): string {
+  let decoded = key;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded;
+}
+
+function isPrivateIncomingObjectKey(key: string): boolean {
+  return decodeKeyForPublicPolicy(key).toLowerCase().startsWith('incoming-');
+}
+
+function isLegacyPublicIncomingObjectKey(key: string): boolean {
+  return /^incoming-[^/\\]+\.(?:png|jpe?g|gif|webp)$/i.test(decodeKeyForPublicPolicy(key));
+}
+
+/** The historical bridge is blocked only by the literal string "true". */
+function isIncomingMediaPublicBlockEnabled(value: string | undefined): boolean {
+  return value === 'true';
+}
+
 // POST /api/images — upload image (base64 or binary)
 images.post('/api/images', async (c) => {
   try {
@@ -75,6 +102,18 @@ images.post('/api/images', async (c) => {
 // GET /images/:key — serve image (public, no auth)
 images.get('/images/:key', async (c) => {
   const key = c.req.param('key');
+  const policyKey = decodeKeyForPublicPolicy(key);
+
+  if (policyKey.includes('/') || policyKey.includes('\\')) {
+    return c.json({ success: false, error: 'Image not found' }, 404);
+  }
+  // Historical extension-bearing incoming keys remain reachable while the
+  // cutover gate is false/unset. New digest-only objects are always private.
+  if (isPrivateIncomingObjectKey(key)
+    && (!isLegacyPublicIncomingObjectKey(key)
+      || isIncomingMediaPublicBlockEnabled(c.env.INCOMING_MEDIA_PUBLIC_BLOCK_ENABLED))) {
+    return c.json({ success: false, error: 'Image not found' }, 404);
+  }
   const object = await c.env.IMAGES.get(key);
 
   if (!object) {
@@ -93,6 +132,10 @@ images.get('/images/:key', async (c) => {
 images.delete('/api/images/:key', async (c) => {
   try {
     const key = c.req.param('key');
+    // Generic deletion must never remove evidence without its D1 ledger row.
+    if (isPrivateIncomingObjectKey(key)) {
+      return c.json({ success: false, error: 'Image not found' }, 404);
+    }
     await c.env.IMAGES.delete(key);
     return c.json({ success: true, data: null });
   } catch (err) {

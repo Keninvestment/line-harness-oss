@@ -65,6 +65,7 @@ import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
 import { capabilities } from './routes/capabilities.js';
 import { images } from './routes/images.js';
+import { incomingMedia } from './routes/incoming-media.js';
 import { accountSettings } from './routes/account-settings.js';
 import { setup } from './routes/setup.js';
 import { autoReplies } from './routes/auto-replies.js';
@@ -104,6 +105,8 @@ export type Env = {
     LINE_LOGIN_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_SECRET: string;
     WORKER_URL: string;
+    /** Literal "true" blocks historical public incoming-* image URLs. */
+    INCOMING_MEDIA_PUBLIC_BLOCK_ENABLED?: string;
     // Admin auth topology (see middleware/admin-auth-config.ts):
     ADMIN_ORIGIN?: string;          // Comma-separated admin web origin allowlist for credentialed CORS
     ADMIN_COOKIE_SAMESITE?: string; // Optional override: 'Strict' | 'Lax' | 'None'
@@ -130,6 +133,12 @@ export type Env = {
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
+    incomingMediaService?: {
+      credentialId: string;
+      lineAccountId: string;
+      scope: 'incoming_media_read';
+    };
+    incomingMediaAccountId?: string;
   };
 };
 
@@ -190,6 +199,7 @@ app.route('/', adPlatforms);
 app.route('/', staff);
 app.route('/', capabilities);
 app.route('/', images);
+app.route('/', incomingMedia);
 app.route('/', setup);
 app.route('/', autoReplies);
 app.route('/', adminAuth);

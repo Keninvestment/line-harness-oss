@@ -475,6 +475,40 @@ CREATE TABLE google_calendar_connections (
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE incoming_media (
+  id                TEXT PRIMARY KEY,
+  line_account_id   TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  line_message_id   TEXT NOT NULL,
+  source_type       TEXT NOT NULL CHECK (source_type IN ('user', 'group', 'room')),
+  source_id         TEXT NOT NULL,
+  sender_user_id    TEXT,
+  r2_key            TEXT NOT NULL,
+  mime_type         TEXT,
+  byte_size         INTEGER,
+  sha256            TEXT,
+  status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'stored', 'failed')),
+  stored_at         TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  UNIQUE (line_account_id, line_message_id)
+);
+
+CREATE TABLE incoming_media_service_credentials (
+  id                TEXT PRIMARY KEY
+                    CHECK (length(id) = 32 AND id NOT GLOB '*[^0-9a-f]*'),
+  line_account_id   TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  scope             TEXT NOT NULL DEFAULT 'incoming_media_read'
+                    CHECK (scope = 'incoming_media_read'),
+  token_sha256      TEXT NOT NULL UNIQUE
+                    CHECK (length(token_sha256) = 64 AND token_sha256 NOT GLOB '*[^0-9a-f]*'),
+  label             TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 80),
+  not_before        TEXT NOT NULL,
+  expires_at        TEXT NOT NULL,
+  revoked_at        TEXT,
+  created_at        TEXT NOT NULL,
+  CHECK (not_before < expires_at)
+);
+
 CREATE TABLE incoming_webhooks (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
@@ -838,6 +872,77 @@ CREATE TABLE users (
   updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE webinar_comments (
+  id TEXT PRIMARY KEY,
+  webinar_id TEXT NOT NULL REFERENCES webinars(id) ON DELETE CASCADE,
+  at_seconds INTEGER NOT NULL,
+  author_name TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE webinar_ctas (
+  id TEXT PRIMARY KEY,
+  webinar_id TEXT NOT NULL REFERENCES webinars(id) ON DELETE CASCADE,
+  at_seconds INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('form', 'url')),
+  title TEXT NOT NULL,
+  body TEXT,
+  button_label TEXT NOT NULL,
+  auto_open INTEGER NOT NULL DEFAULT 0,
+  form_id TEXT REFERENCES forms(id),
+  url TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE webinar_registrations (
+  id TEXT PRIMARY KEY,
+  webinar_id TEXT NOT NULL REFERENCES webinars(id) ON DELETE CASCADE,
+  friend_id TEXT NOT NULL REFERENCES friends(id),
+  session_start_at INTEGER NOT NULL,
+  notified_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (webinar_id, friend_id, session_start_at)
+);
+
+CREATE TABLE webinar_user_comments (
+  id TEXT PRIMARY KEY,
+  webinar_id TEXT NOT NULL REFERENCES webinars(id) ON DELETE CASCADE,
+  friend_id TEXT NOT NULL REFERENCES friends(id),
+  session_start_at INTEGER NOT NULL,
+  at_seconds INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE webinar_viewers (
+  id TEXT PRIMARY KEY,
+  webinar_id TEXT NOT NULL REFERENCES webinars(id) ON DELETE CASCADE,
+  friend_id TEXT NOT NULL REFERENCES friends(id),
+  session_start_at INTEGER NOT NULL,
+  joined_at TEXT NOT NULL,
+  last_position_seconds INTEGER NOT NULL DEFAULT 0,
+  cta_clicked_at TEXT,
+  UNIQUE (webinar_id, friend_id, session_start_at)
+);
+
+CREATE TABLE webinars (
+  id TEXT PRIMARY KEY,
+  account_id TEXT REFERENCES line_accounts(id),
+  title TEXT NOT NULL,
+  slug TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active','archived')),
+  video_prefix TEXT,
+  duration_seconds INTEGER NOT NULL DEFAULT 0,
+  schedule_json TEXT NOT NULL DEFAULT '[]',
+  cta_json TEXT,
+  tag_on_attend TEXT,
+  tag_on_cta_click TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX idx_ad_conversion_logs_friend ON ad_conversion_logs (friend_id);
 
 CREATE INDEX idx_ad_conversion_logs_platform ON ad_conversion_logs (ad_platform_id);
@@ -943,6 +1048,12 @@ CREATE INDEX idx_health_logs_account ON account_health_logs (line_account_id);
 
 CREATE INDEX idx_idempotency_expires ON booking_idempotency_keys (expires_at);
 
+CREATE INDEX idx_incoming_media_service_credentials_account_active
+  ON incoming_media_service_credentials(line_account_id, revoked_at, expires_at);
+
+CREATE INDEX idx_incoming_media_status_updated
+  ON incoming_media(status, updated_at);
+
 CREATE INDEX idx_line_accounts_display_order
   ON line_accounts (display_order, created_at);
 
@@ -1013,3 +1124,21 @@ CREATE INDEX idx_users_email ON users (email);
 CREATE INDEX idx_users_external_id ON users (external_id);
 
 CREATE INDEX idx_users_phone ON users (phone);
+
+CREATE INDEX idx_webinar_comments_webinar
+  ON webinar_comments (webinar_id, at_seconds);
+
+CREATE INDEX idx_webinar_ctas_webinar
+  ON webinar_ctas (webinar_id, at_seconds);
+
+CREATE INDEX idx_webinar_regs_due
+  ON webinar_registrations (notified_at, session_start_at);
+
+CREATE INDEX idx_webinar_regs_friend
+  ON webinar_registrations (webinar_id, friend_id);
+
+CREATE INDEX idx_webinar_user_comments_webinar
+  ON webinar_user_comments (webinar_id, created_at);
+
+CREATE INDEX idx_webinar_viewers_webinar
+  ON webinar_viewers (webinar_id, session_start_at);
