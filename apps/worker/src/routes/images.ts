@@ -21,13 +21,15 @@ function isPrivateIncomingObjectKey(key: string): boolean {
   return decodeKeyForPublicPolicy(key).toLowerCase().startsWith('incoming-');
 }
 
-function isLegacyPublicIncomingObjectKey(key: string): boolean {
-  return /^incoming-[^/\\]+\.(?:png|jpe?g|gif|webp)$/i.test(decodeKeyForPublicPolicy(key));
-}
-
-/** The historical bridge is blocked only by the literal string "true". */
-function isIncomingMediaPublicBlockEnabled(value: string | undefined): boolean {
-  return value === 'true';
+function privateIncomingNotFound(): Response {
+  return new Response(JSON.stringify({ success: false, error: 'Image not found' }), {
+    status: 404,
+    headers: {
+      'Cache-Control': 'private, no-store',
+      'Content-Type': 'application/json',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
 }
 
 // POST /api/images — upload image (base64 or binary)
@@ -107,12 +109,11 @@ images.get('/images/:key', async (c) => {
   if (policyKey.includes('/') || policyKey.includes('\\')) {
     return c.json({ success: false, error: 'Image not found' }, 404);
   }
-  // Historical extension-bearing incoming keys remain reachable while the
-  // cutover gate is false/unset. New digest-only objects are always private.
-  if (isPrivateIncomingObjectKey(key)
-    && (!isLegacyPublicIncomingObjectKey(key)
-      || isIncomingMediaPublicBlockEnabled(c.env.INCOMING_MEDIA_PUBLIC_BLOCK_ENABLED))) {
-    return c.json({ success: false, error: 'Image not found' }, 404);
+  // The #5229 ledger backfill and URL rewrite are complete. Keep every
+  // incoming object private in code so a missing or stale runtime binding can
+  // never reopen a historical public URL. Return before consulting R2.
+  if (isPrivateIncomingObjectKey(key)) {
+    return privateIncomingNotFound();
   }
   const object = await c.env.IMAGES.get(key);
 

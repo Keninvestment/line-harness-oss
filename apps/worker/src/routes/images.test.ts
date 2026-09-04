@@ -61,14 +61,6 @@ describe('GET /images/:key', () => {
     expect(res.status).toBe(404);
   });
 
-  it('keeps legacy incoming objects available while the gate is unset', async () => {
-    const { app, store, get } = setupApp();
-    store.set('incoming-secret.png', { body: 'evidence', contentType: 'image/png' });
-    const res = await app.request('/images/incoming-secret.png');
-    expect(res.status).toBe(200);
-    expect(get).toHaveBeenCalledWith('incoming-secret.png');
-  });
-
   it.each([undefined, 'false', 'true'])('never serves digest-only private keys when gate=%s', async (value) => {
     const { app, store, get } = setupApp({ INCOMING_MEDIA_PUBLIC_BLOCK_ENABLED: value });
     store.set(NEW_INCOMING_DIGEST_KEY, { body: 'evidence', contentType: 'image/png' });
@@ -81,19 +73,32 @@ describe('GET /images/:key', () => {
     '/images/InCoMiNg-secret.png',
     '/images/%69nCoMiNg-secret.png',
     '/images/%2569ncoming-secret.png',
-  ])('blocks normalized incoming prefixes after explicit cutover: %s', async (path) => {
-    const { app, get } = setupApp({ INCOMING_MEDIA_PUBLIC_BLOCK_ENABLED: 'true' });
+  ])('blocks normalized incoming prefixes without consulting R2: %s', async (path) => {
+    const { app, get } = setupApp();
     const res = await app.request(path);
     expect(res.status).toBe(404);
     expect(get).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, 'TRUE', '1', 'false'])('does not activate for non-literal true: %s', async (value) => {
+  it.each([undefined, 'TRUE', '1', 'false', 'true'])('never serves a legacy incoming object for gate=%s', async (value) => {
     const { app, store, get } = setupApp({ INCOMING_MEDIA_PUBLIC_BLOCK_ENABLED: value });
     store.set('incoming-secret.png', { body: 'evidence', contentType: 'image/png' });
     const res = await app.request('/images/incoming-secret.png');
-    expect(res.status).toBe(200);
-    expect(get).toHaveBeenCalledWith('incoming-secret.png');
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain('evidence');
+    expect(res.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('returns a bodyless private 404 to HEAD for incoming media without consulting R2', async () => {
+    const { app, get } = setupApp();
+    const res = await app.request('/images/incoming-secret.png', { method: 'HEAD' });
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('');
+    expect(res.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(get).not.toHaveBeenCalled();
   });
 });
 
