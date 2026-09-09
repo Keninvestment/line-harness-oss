@@ -48,6 +48,10 @@ vi.mock('../services/event-bus.js', () => ({
   logOutgoingMessage: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../services/local-line-proxy.js', () => ({
+  dispatchLineProxyLocally: vi.fn().mockResolvedValue(new Response(null, { status: 200 })),
+}));
+
 vi.mock('../services/step-delivery.js', () => ({
   buildMessage: vi.fn(),
   expandVariables: vi.fn(),
@@ -604,7 +608,9 @@ describe('POST /webhook — per-account raw forwarding', () => {
     }, baseEnv, ctx);
 
     expect(res.status).toBe(200);
-    expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
+    // Newer runtimes may schedule additional independent work (for example
+    // activity mileage), so do not identify forwarding by task position/count.
+    expect(vi.mocked(ctx.waitUntil).mock.calls.length).toBeGreaterThanOrEqual(2);
     await drainWaitUntil(ctx);
     expect(getForwardRawUrl).toHaveBeenCalledWith(baseEnv.DB, 'acc-forward');
     expect(forwardRawBody).toHaveBeenCalledWith(

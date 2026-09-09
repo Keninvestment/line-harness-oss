@@ -30,8 +30,12 @@ import { attachTagAndFireSideEffects } from '../services/friend-tag-attach.js';
 import { pushImmediateFirstStep } from '../services/immediate-first-step.js';
 import { notifyAffiliateFriendAdd } from '../services/affiliate-notifier.js';
 import { verifyCallerLineUserId } from '../services/liff-auth.js';
+import { awardActivityMileage } from '../services/activity-mileage.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
+import { isReservedRef } from '../lib/reserved-refs.js';
+import { loginUnconfiguredPage } from '../lib/login-unconfigured.js';
 import type { Env } from '../index.js';
+import { verifyCrossAccountToken } from '../lib/cross-account-token.js';
 
 
 // OAuth state base64 helpers. btoa() only accepts Latin-1, so a single
@@ -94,6 +98,17 @@ async function linkIgIgsid(
     );
     return false;
   }
+
+  // A successful IG -> LINE return is itself an engagement milestone. The
+  // stable identity/subject keys make repeated LIFF visits harmless.
+  await awardActivityMileage(c.env.DB, {
+    eventType: 'instagram_line_returned',
+    source: 'instagram',
+    sourceEventId: `${friendId}:${igParam}`,
+    friendId,
+    subjectKey: igParam,
+    metadata: { igsid: igParam },
+  });
 
   if (c.env.IG_HARNESS_URL && c.env.IG_HARNESS_LINK_SECRET) {
     c.executionCtx.waitUntil(
@@ -188,6 +203,11 @@ async function applyRefAttribution(
   options?: { accountChannelId?: string | null; isNewFriend?: boolean },
 ): Promise<void> {
   if (!ref || ref.startsWith('xh:')) return;
+  // Reserved product refs (e.g. 'dashboard') are provenance markers, never
+  // campaigns — skip route/tracked-link/affiliate side effects even when a
+  // tenant has a pre-existing row with that ref_code. friends.ref_code and
+  // ref_tracking writes happen in the callers and are unaffected.
+  if (isReservedRef(ref)) return;
   const db = c.env.DB;
 
   const route = await getEntryRouteByRefCode(db, ref);
@@ -316,28 +336,19 @@ liffRoutes.get('/auth/line', async (c) => {
 
   // Multi-account: resolve LINE Login channel + LIFF
   // Priority:
-  //   1. entry_route.pool_id (when ref resolves to a referral link)
-  //   2. ?account= explicit single-account override
+  //   1. ?account= explicit single-account pin — wins over ref-derived pools
+  //      so an admin-issued per-account link is never re-routed by a
+  //      colliding ref_code (the ref still rides along for attribution)
+  //   2. entry_route.pool_id (when ref resolves to a referral link)
   //   3. ?pool= explicit override
   //   4. 'main' traffic pool fallback
   //   5. env default
   let channelId = c.env.LINE_LOGIN_CHANNEL_ID;
   let liffUrl = c.env.LIFF_URL;
 
-  // 1. entry_route → pool_id. getTrafficPoolById skips the is_active check
-  // that getTrafficPoolBySlug does for us, so we filter disabled pools here
-  // to honor an operator pause.
-  let resolvedPool: Awaited<ReturnType<typeof getTrafficPoolBySlug>> | null = null;
-  if (ref) {
-    const route = await getEntryRouteByRefCode(c.env.DB, ref);
-    if (route?.pool_id) {
-      const candidate = await getTrafficPoolById(c.env.DB, route.pool_id);
-      if (candidate?.is_active) resolvedPool = candidate;
-    }
-  }
-
-  if (!resolvedPool && accountParam) {
-    // 2. ?account= explicit override
+  // 1. ?account= explicit pin.
+  let accountResolved = false;
+  if (accountParam) {
     const account = await getLineAccountByChannelId(c.env.DB, accountParam);
     if (account?.login_channel_id) {
       channelId = account.login_channel_id;
@@ -345,6 +356,23 @@ liffRoutes.get('/auth/line', async (c) => {
     if (account?.liff_id) {
       liffUrl = `https://liff.line.me/${account.liff_id}`;
     }
+    accountResolved = Boolean(account?.login_channel_id || account?.liff_id);
+  }
+
+  // 2. entry_route → pool_id. getTrafficPoolById skips the is_active check
+  // that getTrafficPoolBySlug does for us, so we filter disabled pools here
+  // to honor an operator pause.
+  let resolvedPool: Awaited<ReturnType<typeof getTrafficPoolBySlug>> | null = null;
+  if (ref && !accountResolved) {
+    const route = await getEntryRouteByRefCode(c.env.DB, ref);
+    if (route?.pool_id) {
+      const candidate = await getTrafficPoolById(c.env.DB, route.pool_id);
+      if (candidate?.is_active) resolvedPool = candidate;
+    }
+  }
+
+  if (accountResolved) {
+    // account pin already applied above — skip pool resolution entirely
   } else {
     // 3 / 4: pool lookup (entry_route.pool_id wins over query)
     if (!resolvedPool) {
@@ -371,6 +399,14 @@ liffRoutes.get('/auth/line', async (c) => {
       }
     }
   }
+  // L Harness Cloud tenants are provisioned without LINE Login / LIFF config.
+  // When neither env nor the resolved account/pool provides them, the code
+  // below crashes (`liffUrl.match()` on undefined) or sends
+  // client_id=undefined to access.line.me — fail with setup guidance instead.
+  if (!channelId || !liffUrl) {
+    return c.html(loginUnconfiguredPage(), 503);
+  }
+
   const callbackUrl = `${baseUrl}/auth/callback`;
 
   // xh: refs are X Harness one-time tokens — never forward to third-party URLs (liff.line.me / QR)
@@ -452,15 +488,24 @@ liffRoutes.get('/auth/line', async (c) => {
   // dropped onto liff.line.me directly. Direct liff.line.me redirects
   // surface LINE Login web for UL-未学習 devices, which kills conversion.
   // Exceptions:
-  //   - cross-account links (accountParam) → OAuth directly so the callback
-  //     can push from the correct account
+  //   - account links carrying callback-only state → OAuth. Three params can
+  //     only be honored by /auth/callback and are silently dropped on the
+  //     LIFF-direct path:
+  //       * uid   — cross-account UUID linking (the LIFF client never reads
+  //                 ?uid=; it only knows its own localStorage UUID)
+  //       * ref=xh: — X Harness one-time tokens ride the OAuth state and are
+  //                 deliberately stripped from external liff.line.me/QR URLs
+  //       * redirect — post-link redirect is not forwarded by qrUrl
+  //     Plain ?account= links go LIFF-direct instead: /api/liff/link resolves
+  //     the account from the verified id_token, so the OAuth web-login detour
+  //     added friction without adding correctness.
   //   - xh: refs (X Harness one-time tokens) → liff.line.me direct, since
   //     these tokens must NEVER appear in third-party URLs and the
   //     externalRef has already been zeroed for that case
   //   - empty ref → liff.line.me direct (no /r/:ref to route to)
   const isMobile = /iphone|ipad|android|mobile/.test(ua.toLowerCase());
   if (isMobile) {
-    if (accountParam) {
+    if (accountParam && (uidParam || redirect || ref.startsWith('xh:'))) {
       return c.redirect(loginUrl.toString());
     }
     if (externalRef) {
@@ -570,6 +615,12 @@ liffRoutes.get('/auth/oauth', async (c) => {
     }
   }
 
+  // Same guard as /auth/line — without a login channel the redirect would
+  // carry client_id=undefined and dead-end on a LINE error page.
+  if (!channelId) {
+    return c.html(loginUnconfiguredPage(), 503);
+  }
+
   // Build OAuth URL with full state
   const callbackUrl = `${baseUrl}/auth/callback`;
   const state = JSON.stringify({
@@ -659,6 +710,12 @@ liffRoutes.get('/auth/callback', async (c) => {
         loginChannelId = account.login_channel_id;
         loginChannelSecret = account.login_channel_secret;
       }
+    }
+
+    // Same guard as /auth/line — never attempt a token exchange with
+    // undefined credentials (unconfigured L Harness Cloud tenant).
+    if (!loginChannelId || !loginChannelSecret) {
+      return c.html(loginUnconfiguredPage(), 503);
     }
 
     // Exchange code for tokens
@@ -1124,6 +1181,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
       displayName?: string | null;
       ref?: string;
       existingUuid?: string;
+      crossAccountToken?: string;
       ig?: string;
       iga?: string;
       igan?: string;
@@ -1178,13 +1236,33 @@ liffRoutes.post('/api/liff/link', async (c) => {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
 
+    let linkedUserId = (friend as unknown as Record<string, unknown>).user_id as string | null;
+    if (body.crossAccountToken) {
+      const crossAccount = await verifyCrossAccountToken(
+        c.env.LINE_CHANNEL_SECRET,
+        body.crossAccountToken,
+      );
+      if (!crossAccount || !matchedAccount || crossAccount.targetAccountId !== matchedAccount.id) {
+        return c.json({ success: false, error: 'Invalid cross-account token' }, 400);
+      }
+      const targetUser = await db
+        .prepare('SELECT id FROM users WHERE id = ?')
+        .bind(crossAccount.userId)
+        .first<{ id: string }>();
+      if (!targetUser) {
+        return c.json({ success: false, error: 'Cross-account user not found' }, 400);
+      }
+      await linkFriendToUser(db, friend.id, crossAccount.userId);
+      linkedUserId = crossAccount.userId;
+    }
+
     // IG cross-link: runs regardless of already-linked vs new-link branch so
     // existing friends still get ig_igsid wired when they hit this endpoint
     // from a reward DM.
     const igLinkOk = await linkIgIgsid(c, friend.id, body.ig || '');
     if (igLinkOk) await saveIgAccountMeta(db, friend.id, body.iga || '', body.igan || '');
 
-    if ((friend as unknown as Record<string, unknown>).user_id) {
+    if (linkedUserId) {
       // Still save ref even if already linked (but never persist xh: tokens as ref_code)
       if (body.ref && !body.ref.startsWith('xh:')) {
         await db.prepare('UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL')
@@ -1238,7 +1316,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
       }
       return c.json({
         success: true,
-        data: { userId: (friend as unknown as Record<string, unknown>).user_id, alreadyLinked: true },
+        data: { userId: linkedUserId, alreadyLinked: true },
       });
     }
 

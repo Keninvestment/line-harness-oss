@@ -1,6 +1,6 @@
 🌐 [日本語](README.md) | [English](README.en.md) | **简体中文** | [한국어](README.ko.md) | [Español](README.es.md)
 
-# LINE Harness
+# L Harness
 
 > ### **[在 LINE 上免费体验](https://shudesu.github.io/line-harness-oss/)** 👈
 
@@ -9,15 +9,15 @@
 
 ### ▶️ [在 YouTube 观看视频教程（约 20 分钟）](https://youtu.be/DiRuGaeq1sM)
 
-[![点击在 YouTube 播放 — LINE Harness 配置教程](https://img.youtube.com/vi/DiRuGaeq1sM/maxresdefault.jpg)](https://youtu.be/DiRuGaeq1sM)
+[![点击在 YouTube 播放 — L Harness 配置教程](https://img.youtube.com/vi/DiRuGaeq1sM/maxresdefault.jpg)](https://youtu.be/DiRuGaeq1sM)
 
 **当前版本**: v0.13.2 ・ MIT 许可证 ・ TypeScript / Cloudflare Workers + D1
 
 ---
 
-## 为什么选择 LINE Harness？
+## 为什么选择 L Harness？
 
-| | 闭源 SaaS A | 闭源 SaaS B | **LINE Harness** |
+| | 闭源 SaaS A | 闭源 SaaS B | **L Harness** |
 |---|---|---|---|
 | 月费 | ¥20,000+ | ¥10,000+ | **0 日元** |
 | 步骤群发 | ✅ | ✅ | ✅ |
@@ -163,4 +163,4 @@ MIT License. 商用、修改、再分发自由。
 
 ---
 
-> **LINE Harness** by [@Shudesu](https://github.com/Shudesu) — AI 原生时代的开源 LINE CRM
+> **L Harness** by [@Shudesu](https://github.com/Shudesu) — AI 原生时代的开源 LINE CRM

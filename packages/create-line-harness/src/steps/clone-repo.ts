@@ -82,7 +82,7 @@ export async function pinRepoToTag(
 }
 
 /**
- * Clone the LINE Harness repo and install dependencies.
+ * Clone the L Harness repo and install dependencies.
  * Returns the path to the cloned repo.
  */
 export async function ensureRepo(repoDir: string | null): Promise<string> {
@@ -155,7 +155,7 @@ export async function ensureRepo(repoDir: string | null): Promise<string> {
 
   // Clone fresh
   const s = p.spinner();
-  s.start("LINE Harness をダウンロード中...");
+  s.start("L Harness をダウンロード中...");
 
   try {
     await execa("git", ["clone", "--depth", "1", REPO_URL, homeDir]);

@@ -25,6 +25,9 @@ vi.mock('@line-crm/db', () => ({
   getTrackedLinkById: vi.fn(),
   getMessageTemplateById: vi.fn(),
   getLineAccountById: mocks.getLineAccountById,
+  // フォームの公開 URL（formUrl）組み立てに使う。既定は「1本に決まらない」= null で、
+  // その場合 formUrl も null になる（LIFF 未構成テナントと同じ扱い）。
+  resolveDefaultLineAccount: vi.fn(async () => null),
   enrollFriendInScenario: vi.fn(),
   jstNow: vi.fn(() => '2026-08-04T12:00:00+09:00'),
 }));
@@ -68,7 +71,8 @@ const baseForm = {
 
 function env() {
   const run = vi.fn(async () => ({ success: true }));
-  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const first = vi.fn(async () => null as { slug: string } | null);
+  const bind = vi.fn((..._args: unknown[]) => ({ run, first }));
   const prepare = vi.fn((_sql: string) => ({ bind }));
   return {
     bindings: {
@@ -79,6 +83,7 @@ function env() {
     } as Env['Bindings'],
     prepare,
     bind,
+    first,
   };
 }
 
@@ -131,6 +136,16 @@ describe('public form representation', () => {
     expect(body.data).not.toHaveProperty('onSubmitTagId');
     expect(body.data).not.toHaveProperty('onSubmitScenarioId');
     expect(JSON.stringify(body.data)).not.toContain('Bearer secret');
+  });
+
+  test('returns the active webinar consultation route for the LIFF form', async () => {
+    const { bindings, first } = env();
+    first.mockResolvedValue({ slug: 'ritz-voice-1-l1b' });
+    const res = await app().request('/api/forms/form-1', {}, bindings);
+    expect(res.status).toBe(200);
+
+    const body = await res.json() as { data: Record<string, unknown> };
+    expect(body.data.consultationWebinarSlug).toBe('ritz-voice-1-l1b');
   });
 
   test('keeps the full representation for an authenticated admin', async () => {

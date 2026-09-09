@@ -22,6 +22,11 @@ import { buildMessage } from '../services/step-delivery.js';
 import { pushImmediateFirstStep } from '../services/immediate-first-step.js';
 import { forwardRawBody } from '../services/raw-forward.js';
 import type { Env } from '../index.js';
+import { awardActivityMileage } from '../services/activity-mileage.js';
+import { replyViaHarnessProxy } from '../services/line-proxy-send.js';
+import type { HarnessProxyDispatch } from '../services/line-proxy-send.js';
+import { dispatchLineProxyLocally } from '../services/local-line-proxy.js';
+import { ensureSchedulerArmed } from '../durable-objects/tenant-scheduler.js';
 
 const webhook = new Hono<Env>();
 
@@ -179,9 +184,21 @@ webhook.post('/webhook', async (c) => {
 
   // 非同期処理 — LINE は ~1s 以内のレスポンスを要求
   const processingPromise = (async () => {
+    const proxyDispatch: HarnessProxyDispatch = (request) =>
+      dispatchLineProxyLocally(request, c.env, c.executionCtx);
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES);
+        await handleEvent(
+          db,
+          lineClient,
+          event,
+          channelAccessToken,
+          matchedAccountId,
+          c.env.WORKER_URL || new URL(c.req.url).origin,
+          c.env.LIFF_URL,
+          c.env.IMAGES,
+          proxyDispatch,
+        );
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -189,6 +206,12 @@ webhook.post('/webhook', async (c) => {
   })();
 
   c.executionCtx.waitUntil(processingPromise);
+
+  // 定期ジョブ用 DO の自己修復チェック。何らかの理由で alarm チェーンが
+  // 切れていても、次に届いた webhook がここで直す。getAlarm() 1回で済む
+  // 軽さなので毎リクエストで呼んでよい。応答を遅らせないよう waitUntil に
+  // 逃がし、失敗しても webhook 応答（LINE 側の ~1s タイムアウト）には影響しない。
+  c.executionCtx.waitUntil(ensureSchedulerArmed(c.env));
 
   return c.json({ status: 'ok' }, 200);
 });
@@ -202,6 +225,7 @@ async function handleEvent(
   workerUrl?: string,
   liffUrl?: string,
   r2?: R2Bucket,
+  proxyDispatch?: HarnessProxyDispatch,
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -235,6 +259,19 @@ async function handleEvent(
         .bind(lineAccountId, jstNow(), friend.id).run();
       console.log(`[follow] line_account_id set to ${lineAccountId} for friend ${friend.id}`);
     }
+
+    // 新規・再フォローのどちらでも、最初の友だち登録マイルを同じキーで非同期投入する。
+    // first_followed_at を使うため再フォローやWebhook再送では二重加算されない。
+    const firstFollowedAt = friend.first_followed_at ?? friend.created_at;
+    await awardActivityMileage(db, {
+      eventType: 'friend_registered',
+      source: 'line_relationship',
+      sourceEventId: `${friend.id}:friend_registered:${firstFollowedAt}`,
+      friendId: friend.id,
+      subjectKey: friend.id,
+      metadata: { lineAccountId },
+      occurredAt: firstFollowedAt,
+    });
 
     // Resolve referral link (entry_route) for this friend.
     // /auth/callback (OAuth path) writes friends.ref_code in parallel with
@@ -388,7 +425,17 @@ async function handleEvent(
       await matchAndReply(db, lineClient, friend, postbackData, event.replyToken, {
         lineAccountId,
         workerUrl,
+        liffUrl,
         logContext: 'postback',
+        replyMessage: workerUrl
+          ? (token, messages) => replyViaHarnessProxy(
+              workerUrl,
+              lineAccessToken,
+              token,
+              messages,
+              proxyDispatch,
+            )
+          : undefined,
       });
 
     // イベントバス発火: 専用イベント postback_received。
@@ -474,13 +521,21 @@ async function handleEvent(
       finalContent = JSON.stringify(imageRefs);
     }
 
+    const logId = crypto.randomUUID();
     await db
       .prepare(
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, created_at)
          VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?)`,
       )
-      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, jstNow())
+      .bind(logId, friend.id, msg.type, finalContent, jstNow())
       .run();
+    await awardActivityMileage(db, {
+      eventType: 'message_received',
+      source: 'line',
+      sourceEventId: logId,
+      friendId: friend.id,
+      metadata: { messageType: msg.type },
+    });
     // text と同様、非 text の自発メッセージ (画像/スタンプ等) でも chat を unread に戻す。
     // これが無いと resolved 除外 (unanswered-inbox CANDIDATES_SQL) が「解決済み後に
     // 画像だけ送ってきた友だち」をバッジ・未対応一覧から永久に落としてしまう。
@@ -510,6 +565,15 @@ async function handleEvent(
       )
       .bind(logId, friend.id, incomingText, now)
       .run();
+
+    await awardActivityMileage(db, {
+      eventType: 'message_received',
+      source: 'line',
+      sourceEventId: logId,
+      friendId: friend.id,
+      metadata: { messageType: 'text' },
+      occurredAt: now,
+    });
 
     // Cross-account trigger: send message from another account via UUID
     if (incomingText === '体験を完了する' && lineAccountId) {
@@ -570,7 +634,20 @@ async function handleEvent(
       friend,
       incomingText,
       event.replyToken,
-      { lineAccountId, workerUrl },
+      {
+        lineAccountId,
+        workerUrl,
+        liffUrl,
+        replyMessage: workerUrl
+          ? (token, messages) => replyViaHarnessProxy(
+              workerUrl,
+              lineAccessToken,
+              token,
+              messages,
+              proxyDispatch,
+            )
+          : undefined,
+      },
     );
 
     // auto_replies にマッチしなかった = 自発メッセージ → unread にする

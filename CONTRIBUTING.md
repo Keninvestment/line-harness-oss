@@ -1,6 +1,6 @@
-# Contributing to LINE Harness
+# Contributing to L Harness
 
-LINE Harness is a public OSS LINE CRM. The project welcomes issues and pull
+L Harness is a public OSS LINE CRM. The project welcomes issues and pull
 requests, but it also protects real operators, LINE accounts, credentials, and
 customer data. This document is the maintainer rulebook for keeping the public
 queue useful and safe.
@@ -9,7 +9,7 @@ queue useful and safe.
 
 ## Repository Model
 
-LINE Harness is maintained with two repositories:
+L Harness is maintained with two repositories:
 
 - `Shudesu/line-harness-oss`: public OSS intake for issues, discussions, and
   community pull requests.
@@ -53,7 +53,7 @@ plugin template instead of the core product.
 
 - Search existing issues and pull requests.
 - Use the closest issue template.
-- Include the LINE Harness version, Node.js version, pnpm version, Wrangler
+- Include the L Harness version, Node.js version, pnpm version, Wrangler
   version, and deployment target when relevant.
 - Include the smallest reproduction you can.
 - Remove tokens, account IDs, channel secrets, webhook URLs, friend IDs, message

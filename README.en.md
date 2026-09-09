@@ -1,6 +1,6 @@
 🌐 [日本語](README.md) | **English** | [简体中文](README.zh-CN.md) | [한국어](README.ko.md) | [Español](README.es.md)
 
-# LINE Harness
+# L Harness
 
 > ### **[Try free on LINE](https://shudesu.github.io/line-harness-oss/)** 👈
 
@@ -9,15 +9,15 @@ Runs on Cloudflare's free tier. **$0/month server cost.** Fully operable from Cl
 
 ### ▶️ [Watch the walkthrough on YouTube (~20 min)](https://youtu.be/DiRuGaeq1sM)
 
-[![Click to play on YouTube — LINE Harness setup guide](https://img.youtube.com/vi/DiRuGaeq1sM/maxresdefault.jpg)](https://youtu.be/DiRuGaeq1sM)
+[![Click to play on YouTube — L Harness setup guide](https://img.youtube.com/vi/DiRuGaeq1sM/maxresdefault.jpg)](https://youtu.be/DiRuGaeq1sM)
 
 **Current version**: v0.13.2 ・ MIT License ・ TypeScript / Cloudflare Workers + D1
 
 ---
 
-## Why LINE Harness?
+## Why L Harness?
 
-| | Proprietary SaaS A | Proprietary SaaS B | **LINE Harness** |
+| | Proprietary SaaS A | Proprietary SaaS B | **L Harness** |
 |---|---|---|---|
 | Monthly cost | ¥20,000+ | ¥10,000+ | **$0** |
 | Step messaging | ✅ | ✅ | ✅ |
@@ -163,4 +163,4 @@ Issues and PRs welcome. Please open them against `Shudesu/line-harness-oss` (thi
 
 ---
 
-> **LINE Harness** by [@Shudesu](https://github.com/Shudesu) — an AI-native open-source LINE CRM
+> **L Harness** by [@Shudesu](https://github.com/Shudesu) — an AI-native open-source LINE CRM

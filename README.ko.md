@@ -1,6 +1,6 @@
 🌐 [日本語](README.md) | [English](README.en.md) | [简体中文](README.zh-CN.md) | **한국어** | [Español](README.es.md)
 
-# LINE Harness
+# L Harness
 
 > ### **[LINE에서 무료 체험하기](https://shudesu.github.io/line-harness-oss/)** 👈
 
@@ -9,15 +9,15 @@ Cloudflare 무료 플랜에서 동작. **서버 비용 0원**. Claude Code 에�
 
 ### ▶️ [YouTube 에서 영상 보기 (약 20분)](https://youtu.be/DiRuGaeq1sM)
 
-[![클릭하여 YouTube 재생 — LINE Harness 도입 가이드](https://img.youtube.com/vi/DiRuGaeq1sM/maxresdefault.jpg)](https://youtu.be/DiRuGaeq1sM)
+[![클릭하여 YouTube 재생 — L Harness 도입 가이드](https://img.youtube.com/vi/DiRuGaeq1sM/maxresdefault.jpg)](https://youtu.be/DiRuGaeq1sM)
 
 **현재 버전**: v0.13.2 ・ MIT License ・ TypeScript / Cloudflare Workers + D1
 
 ---
 
-## 왜 LINE Harness?
+## 왜 L Harness?
 
-| | 폐쇄형 SaaS A | 폐쇄형 SaaS B | **LINE Harness** |
+| | 폐쇄형 SaaS A | 폐쇄형 SaaS B | **L Harness** |
 |---|---|---|---|
 | 월 요금 | ¥20,000+ | ¥10,000+ | **0 원** |
 | 스텝 메시지 | ✅ | ✅ | ✅ |
@@ -163,4 +163,4 @@ Issue / PR 환영. `Shudesu/line-harness-oss` (이 저장소) 로 보내주세�
 
 ---
 
-> **LINE Harness** by [@Shudesu](https://github.com/Shudesu) — AI 네이티브 시대의 오픈소스 LINE CRM
+> **L Harness** by [@Shudesu](https://github.com/Shudesu) — AI 네이티브 시대의 오픈소스 LINE CRM

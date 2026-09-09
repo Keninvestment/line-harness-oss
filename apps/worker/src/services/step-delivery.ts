@@ -8,6 +8,8 @@ import {
   recoverStuckDeliveries,
   pauseFriendScenarioDelivery,
   getFriendById,
+  getLineAccountById,
+  resolveDefaultLineAccount,
   jstNow,
   computeNextDeliveryAt,
   resolveStepContent,
@@ -18,6 +20,7 @@ import {
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
+import { getQuotaUsage, quotaEnabled, type QuotaEnv } from './quota.js';
 
 /**
  * Replace template variables in message content.
@@ -27,6 +30,7 @@ import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
  * - {{uid}}                 → friend's user UUID
  * - {{friend_id}}           → friend's internal ID
  * - {{auth_url:CHANNEL_ID}} → full /auth/line URL with uid for cross-account linking
+ * - {{form_url:FORM_ID}}   → フォームの公開 URL（LIFF）。`liffId` を渡したときだけ展開する
  * - {{metadata.KEY}}       → friend's metadata value (from form responses etc.)
  */
 export function expandVariables(
@@ -34,6 +38,7 @@ export function expandVariables(
   friend: { id: string; display_name: string | null; user_id: string | null; ref_code?: string | null; metadata?: Record<string, unknown> | string | null },
   apiOrigin?: string,
   messageType?: string,
+  liffId?: string | null,
 ): string {
   let result = content;
   result = result.replace(/\{\{name\}\}/g, friend.display_name || '');
@@ -70,6 +75,18 @@ export function expandVariables(
     if (val == null) return '';
     return Array.isArray(val) ? val.join(', ') : String(val);
   });
+  // {{form_url:FORM_ID}} → フォームの公開 URL。
+  //
+  // ホスト直下（`<worker>/?page=form&id=...`）では liff.init が完了せず
+  // 「永遠に読み込み中」になるので、必ず liff.line.me 経由にする。
+  // liffId が無い（LIFF 未設定）ときは **置換しない** — {{auth_url:}} が
+  // apiOrigin 無しのとき置換しないのと同じ規約。空文字にすると
+  // 「リンクが消えたメッセージ」が本人に届いてしまい、気づけない。
+  if (liffId) {
+    result = result.replace(/\{\{form_url:([^}]+)\}\}/g, (_match, formId) => {
+      return `https://liff.line.me/${liffId}?page=form&id=${String(formId).trim()}`;
+    });
+  }
   if (apiOrigin) {
     result = result.replace(/\{\{auth_url:([^}]+)\}\}/g, (_match, channelId) => {
       const params = new URLSearchParams({ account: channelId, ref: 'cross-link' });
@@ -118,6 +135,7 @@ export async function processStepDeliveries(
   db: D1Database,
   lineClient: LineClient,
   workerUrl?: string,
+  quotaEnv?: QuotaEnv,
 ): Promise<void> {
   // Crash recovery: a claim (active→delivering) that never got released means
   // the worker died mid-delivery — without this, the enrollment is stranded
@@ -129,13 +147,29 @@ export async function processStepDeliveries(
     console.warn(`[step-delivery] recovered ${recovered} stuck 'delivering' enrollment(s)`);
   }
 
+  // Enrollments stay untouched; the next tick re-evaluates once under quota.
+  // While a monthly limit is configured, this tick's sends are additionally
+  // capped to the remaining budget (max - used), computed once up front — no
+  // per-send re-query. Without that cap a tick could overshoot the limit by
+  // up to MAX_SENDS_PER_CRON deliveries. A friends-only limit keeps the
+  // previous behavior (block when exceeded, otherwise the full batch size).
+  let sendBudget = MAX_SENDS_PER_CRON;
+  if (quotaEnv && quotaEnabled(quotaEnv)) {
+    const usage = await getQuotaUsage(db, quotaEnv);
+    if (usage.exceeded) return;
+    if (usage.monthlyMessages.max > 0) {
+      sendBudget = Math.min(sendBudget, usage.monthlyMessages.max - usage.monthlyMessages.used);
+      if (sendBudget <= 0) return;
+    }
+  }
+
   const now = jstNow();
   const dueFriendScenarios = await getFriendScenariosDueForDelivery(db, now);
 
   let sendCount = 0;
   let attemptCount = 0;
   for (let i = 0; i < dueFriendScenarios.length; i++) {
-    if (sendCount >= MAX_SENDS_PER_CRON || attemptCount >= MAX_ATTEMPTS_PER_CRON) break;
+    if (sendCount >= sendBudget || attemptCount >= MAX_ATTEMPTS_PER_CRON) break;
     const fs = dueFriendScenarios[i];
     attemptCount++;
     try {
@@ -314,7 +348,29 @@ async function processSingleDelivery(
   // Expand template variables ({{name}}, {{uid}}, {{auth_url:CHANNEL_ID}}, {{metadata.KEY}}, etc.)
   const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
   const friendWithMeta = { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1];
-  const expandedContent = expandVariables(resolved.messageContent, friendWithMeta, workerUrl, resolved.messageType);
+  // {{form_url:ID}} の展開には liffId が要る。実際に配信するアカウントのものを使う
+  // （別アカウントの liffId で組み立てると、その友だちが開けない URL になる）。
+  //
+  // 本文に含まれていないときは引かない — 全配信に DB 参照を1回足さないため。
+  // 失敗しても配信は止めない（liffId 無しなら {{form_url:}} を置換しないだけ）。
+  let liffIdForExpand: string | null = null;
+  if (resolved.messageContent.includes('{{form_url:')) {
+    try {
+      const acctId = scenarioRow.line_account_id ?? friend.line_account_id ?? null;
+      liffIdForExpand = acctId
+        ? (await getLineAccountById(db, acctId))?.liff_id ?? null
+        : (await resolveDefaultLineAccount(db))?.liff_id ?? null;
+    } catch {
+      liffIdForExpand = null;
+    }
+  }
+  const expandedContent = expandVariables(
+    resolved.messageContent,
+    friendWithMeta,
+    workerUrl,
+    resolved.messageType,
+    liffIdForExpand,
+  );
   // Auto-wrap URLs with tracking links + bake f=<friendId> into /t links —
   // shared pipeline with the instant first-step push (immediate-first-step.ts).
   // リンクの所有アカウントは実際に配信するアカウント (= friend の account) に合わせる

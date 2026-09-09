@@ -1,8 +1,20 @@
 {
   "name": "line-oss-crm",
-  "version": "0.19.0",
+  "version": "0.24.0",
   "private": true,
   "description": "Open-source LINE Official Account CRM/marketing automation",
+  "homepage": "https://the-harness.com/line-harness/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shudesu/line-harness-oss.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Shudesu/line-harness-oss/issues"
+  },
+  "author": {
+    "name": "野田修一 (Shudesu)",
+    "url": "https://the-harness.com/noda-shuichi/"
+  },
   "scripts": {
     "dev:worker": "pnpm --filter worker dev",
     "dev:web": "pnpm --filter web dev",
@@ -15,7 +27,8 @@
     "deploy:update": "node packages/create-line-harness/dist/index.js update",
     "sandbox:create-line-harness": "bash scripts/run-create-line-harness-sandbox.sh",
     "test:scripts": "vitest run --config vitest.config.ts",
-    "build:bundle": "tsx scripts/release/build-bundle.ts"
+    "build:bundle": "tsx scripts/release/build-bundle.ts",
+    "build:wfp-bundle": "tsx scripts/release/build-wfp-bundle.ts"
   },
   "packageManager": "pnpm@9.15.4",
   "engines": {

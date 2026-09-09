@@ -52,6 +52,13 @@ describe('GET /images/:key', () => {
     store.set('abc.png', { body: 'png-bytes', contentType: 'image/png' });
     const res = await app.request('/images/abc.png');
     expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/png');
+  });
+
+  it('404s for a missing key', async () => {
+    const { app } = setupApp();
+    const res = await app.request('/images/missing.png');
+    expect(res.status).toBe(404);
   });
 
   it('never serves slash-containing keys', async () => {
