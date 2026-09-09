@@ -18,6 +18,7 @@ describe('forwardRawBody', () => {
     expect(fetchImpl).toHaveBeenCalledWith('https://saas.example.com/hook/', {
       method: 'POST',
       body: rawBody,
+      redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
         'X-Line-Signature': signature,
@@ -25,6 +26,37 @@ describe('forwardRawBody', () => {
       signal: expect.anything(),
     });
   });
+
+  test.each([302, 307])(
+    'fails closed on HTTP %i without replaying the signed body to the redirect sink',
+    async (status) => {
+      const sink = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+      const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+        // Model native fetch's redirect behavior: redirect:error rejects at
+        // the origin; without it, the request would be replayed to the sink.
+        if (init?.redirect === 'error') {
+          throw new TypeError(`redirect response ${status}`);
+        }
+        return sink('https://redirect-sink.example.com/hook', init);
+      });
+      const sleep = instantSleep();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await forwardRawBody(
+        'https://saas.example.com/hook',
+        '{"secret":"customer-body"}',
+        'customer-signature',
+        { fetchImpl: fetchImpl as typeof fetch, sleep },
+      );
+
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      expect(fetchImpl.mock.calls.every((call) => call[1]?.redirect === 'error')).toBe(true);
+      expect(sink).not.toHaveBeenCalled();
+      expect(sleep).toHaveBeenCalledTimes(2);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      errorSpy.mockRestore();
+    },
+  );
 
   test('retries non-2xx and network failures with bounded backoff', async () => {
     const fetchImpl = vi

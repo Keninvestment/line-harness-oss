@@ -34,6 +34,9 @@ export async function forwardRawBody(
       const response = await fetchImpl(url, {
         method: 'POST',
         body: rawBody,
+        // Never replay the signed customer payload to a redirect target. A
+        // redirect is treated like any other bounded forwarding failure.
+        redirect: 'error',
         headers: {
           'Content-Type': 'application/json',
           'X-Line-Signature': signature,
