@@ -35,6 +35,8 @@ export * from './affiliate-attribution';
 export * from './affiliate-report';
 export * from './account-settings';
 export * from './webinars';
+export * from './incoming-media';
+export * from './incoming-media-service-credentials';
 export * from './admin-sso';
 
 /**

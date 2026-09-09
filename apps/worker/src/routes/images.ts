@@ -3,6 +3,35 @@ import type { Env } from '../index.js';
 
 const images = new Hono<Env>();
 
+function decodeKeyForPublicPolicy(key: string): string {
+  let decoded = key;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded;
+}
+
+function isPrivateIncomingObjectKey(key: string): boolean {
+  return decodeKeyForPublicPolicy(key).toLowerCase().startsWith('incoming-');
+}
+
+function privateIncomingNotFound(): Response {
+  return new Response(JSON.stringify({ success: false, error: 'Image not found' }), {
+    status: 404,
+    headers: {
+      'Cache-Control': 'private, no-store',
+      'Content-Type': 'application/json',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
+}
+
 // POST /api/images — upload image (base64 or binary)
 images.post('/api/images', async (c) => {
   try {
@@ -75,10 +104,16 @@ images.post('/api/images', async (c) => {
 // GET /images/:key — serve image (public, no auth)
 images.get('/images/:key', async (c) => {
   const key = c.req.param('key');
-  // Public route: only flat "{uuid}.{ext}" keys are servable. Anything with a
-  // path separator (e.g. archive/ objects) must 404.
-  if (key.includes('/') || key.includes('\\')) {
+  const policyKey = decodeKeyForPublicPolicy(key);
+
+  if (policyKey.includes('/') || policyKey.includes('\\')) {
     return c.json({ success: false, error: 'Image not found' }, 404);
+  }
+  // The #5229 ledger backfill and URL rewrite are complete. Keep every
+  // incoming object private in code so a missing or stale runtime binding can
+  // never reopen a historical public URL. Return before consulting R2.
+  if (isPrivateIncomingObjectKey(key)) {
+    return privateIncomingNotFound();
   }
   const object = await c.env.IMAGES.get(key);
 
@@ -98,6 +133,10 @@ images.get('/images/:key', async (c) => {
 images.delete('/api/images/:key', async (c) => {
   try {
     const key = c.req.param('key');
+    // Generic deletion must never remove evidence without its D1 ledger row.
+    if (isPrivateIncomingObjectKey(key)) {
+      return c.json({ success: false, error: 'Image not found' }, 404);
+    }
     await c.env.IMAGES.delete(key);
     return c.json({ success: true, data: null });
   } catch (err) {

@@ -13,12 +13,14 @@ import {
   jstNow,
   getEntryRouteByRefCode,
   getMessageTemplateById,
+  getForwardRawUrl,
 } from '@line-crm/db';
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { matchAndReply } from '../services/auto-reply.js';
 import { buildMessage } from '../services/step-delivery.js';
 import { pushImmediateFirstStep } from '../services/immediate-first-step.js';
+import { forwardRawBody } from '../services/raw-forward.js';
 import type { Env } from '../index.js';
 import { awardActivityMileage } from '../services/activity-mileage.js';
 import { replyViaHarnessProxy } from '../services/line-proxy-send.js';
@@ -149,6 +151,25 @@ webhook.post('/webhook', async (c) => {
   if (!valid) {
     console.error('Invalid LINE signature');
     return c.json({ status: 'ok' }, 200);
+  }
+
+  // Start forwarding only after signature validation identifies an account,
+  // but before parsing. The exact body text is therefore still opaque and
+  // untouched. This task is independent from Harness event processing.
+  if (matchedAccountId) {
+    const accountId = matchedAccountId;
+    c.executionCtx.waitUntil(
+      (async () => {
+        try {
+          const forwardUrl = await getForwardRawUrl(db, accountId);
+          if (forwardUrl) await forwardRawBody(forwardUrl, rawBody, signature);
+        } catch {
+          // A settings lookup failure must not change the webhook response or
+          // disclose the account, destination, signature, or request body.
+          console.error('[webhook] raw forwarding lookup failed');
+        }
+      })(),
+    );
   }
 
   let body: WebhookRequestBody;
@@ -438,11 +459,6 @@ async function handleEvent(
   // ここで早期 return することで、テキスト用の auto_reply / scenario 判定には進まない
   // （スタンプ単体に対するキーワードマッチは意味を持たないため）。inbox 抜けだけ防ぐ。
   if (event.type === 'message' && event.message.type !== 'text') {
-    const userId = event.source.type === 'user' ? event.source.userId : undefined;
-    if (!userId) return;
-    const friend = await ensureFriendFromWebhookUser(db, lineClient, userId, lineAccountId);
-    if (!friend) return;
-
     const msg = event.message as {
       id: string;
       type: string;
@@ -455,6 +471,33 @@ async function handleEvent(
       stickerResourceType?: string | number;
       sticker_resource_type?: string | number;
     };
+
+    // Preserve evidence before the user-only friend path. Group/room sources
+    // do not create or mutate a 1:1 friend, but their images still belong in
+    // the private account-scoped ledger.
+    let imageRefs: { originalContentUrl: string; previewImageUrl: string } | null = null;
+    if (msg.type === 'image' && r2 && workerUrl && lineAccountId) {
+      const source = event.source.type === 'user'
+        ? { type: 'user' as const, id: event.source.userId, senderUserId: event.source.userId }
+        : event.source.type === 'group'
+          ? { type: 'group' as const, id: event.source.groupId, senderUserId: event.source.userId ?? null }
+          : { type: 'room' as const, id: event.source.roomId, senderUserId: event.source.userId ?? null };
+      const { fetchAndStoreIncomingImage } = await import('../services/incoming-image.js');
+      imageRefs = await fetchAndStoreIncomingImage({
+        db,
+        r2,
+        workerUrl,
+        channelAccessToken: lineAccessToken,
+        accountId: lineAccountId,
+        messageId: msg.id,
+        source,
+      });
+    }
+
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+    const friend = await ensureFriendFromWebhookUser(db, lineClient, userId, lineAccountId);
+    if (!friend) return;
     const labels: Record<string, string> = {
       sticker: '[スタンプ]',
       image: '[画像]',
@@ -474,19 +517,8 @@ async function handleEvent(
         finalContent = JSON.stringify(stickerContent);
       }
     }
-    if (msg.type === 'image' && r2 && workerUrl) {
-      const lineMessageId = msg.id;
-      const { fetchAndStoreIncomingImage } = await import('../services/incoming-image.js');
-      const refs = await fetchAndStoreIncomingImage({
-        r2,
-        workerUrl,
-        channelAccessToken: lineAccessToken,
-        accountId: lineAccountId ?? 'unknown',
-        messageId: lineMessageId,
-      });
-      if (refs) {
-        finalContent = JSON.stringify(refs);
-      }
+    if (imageRefs) {
+      finalContent = JSON.stringify(imageRefs);
     }
 
     const logId = crypto.randomUUID();

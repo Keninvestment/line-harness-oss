@@ -8,6 +8,8 @@ import {
   updateLineAccountFields,
   updateLineAccountOrder,
   deleteLineAccount,
+  getForwardRawUrl,
+  setForwardRawUrl,
 } from '@line-crm/db';
 import type { LineAccount as DbLineAccount } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
@@ -413,6 +415,61 @@ lineAccounts.post(
       account.id,
     );
     return c.json({ success: true, data: result });
+  },
+);
+
+lineAccounts.get(
+  '/api/line-accounts/:id/settings/forward-raw-url',
+  requireRole('owner', 'admin'),
+  async (c) => {
+    try {
+      const id = c.req.param('id')!;
+      const account = await getLineAccountById(c.env.DB, id);
+      if (!account) return c.json({ success: false, error: 'LINE account not found' }, 404);
+      const value = await getForwardRawUrl(c.env.DB, id);
+      return c.json({ success: true, data: value });
+    } catch (err) {
+      console.error('GET forward_raw_url error:', err);
+      return c.json({ success: false, error: 'Internal server error' }, 500);
+    }
+  },
+);
+
+lineAccounts.put(
+  '/api/line-accounts/:id/settings/forward-raw-url',
+  requireRole('owner'),
+  async (c) => {
+    try {
+      const id = c.req.param('id')!;
+      const account = await getLineAccountById(c.env.DB, id);
+      if (!account) return c.json({ success: false, error: 'LINE account not found' }, 404);
+      const body = await c.req.json<{ value?: unknown }>().catch(() => null);
+      if (!body || typeof body.value !== 'string') {
+        return c.json({ success: false, error: 'value must be a string' }, 400);
+      }
+      await setForwardRawUrl(c.env.DB, id, body.value);
+      return c.json({ success: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Validation error';
+      return c.json({ success: false, error: message }, 400);
+    }
+  },
+);
+
+lineAccounts.delete(
+  '/api/line-accounts/:id/settings/forward-raw-url',
+  requireRole('owner'),
+  async (c) => {
+    try {
+      const id = c.req.param('id')!;
+      const account = await getLineAccountById(c.env.DB, id);
+      if (!account) return c.json({ success: false, error: 'LINE account not found' }, 404);
+      await setForwardRawUrl(c.env.DB, id, '');
+      return c.json({ success: true });
+    } catch (err) {
+      console.error('DELETE forward_raw_url error:', err);
+      return c.json({ success: false, error: 'Internal server error' }, 500);
+    }
   },
 );
 

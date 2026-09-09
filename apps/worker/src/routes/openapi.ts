@@ -20,6 +20,11 @@ const spec = {
         scheme: 'bearer',
         description: 'API Key passed as Bearer token',
       },
+      incomingMediaServiceBearer: {
+        type: 'http',
+        scheme: 'bearer',
+        description: 'One-account, incoming-media HEAD/GET-only service credential',
+      },
     },
     schemas: {
       ApiResponse: {
@@ -490,6 +495,54 @@ const spec = {
       put: { tags: ['LINE Accounts'], summary: 'LINEアカウント更新', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' } } },
       delete: { tags: ['LINE Accounts'], summary: 'LINEアカウント削除', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' } } },
     },
+    '/api/line-accounts/{id}/settings/forward-raw-url': {
+      get: {
+        tags: ['LINE Accounts'],
+        summary: '署名検証済みWebhookの転送先URLを取得',
+        description: 'owner/adminのみ。未設定時はdata=null。',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': { description: 'Configured HTTPS URL or null' },
+          '403': { description: 'Owner or admin role required' },
+          '404': { description: 'LINE account not found' },
+        },
+      },
+      put: {
+        tags: ['LINE Accounts'],
+        summary: '署名検証済みWebhookの転送先URLを設定',
+        description: 'ownerのみ。HTTPSかつuserinfoなしのURLを設定する。末尾スラッシュは保持され、空文字は設定を解除する。',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { value: { type: 'string' } },
+                required: ['value'],
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Setting updated' },
+          '400': { description: 'Invalid URL or request body' },
+          '403': { description: 'Owner role required' },
+          '404': { description: 'LINE account not found' },
+        },
+      },
+      delete: {
+        tags: ['LINE Accounts'],
+        summary: 'Webhook転送先URLを解除',
+        description: 'ownerのみ。設定済みの転送先を削除する。',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': { description: 'Setting cleared' },
+          '403': { description: 'Owner role required' },
+          '404': { description: 'LINE account not found' },
+        },
+      },
+    },
     // ── Conversions ─────────────────────────────────────────────────────────
     '/api/conversions/points': {
       get: { tags: ['Conversions'], summary: 'CV ポイント一覧', responses: { '200': { description: 'All conversion points' } } },
@@ -574,6 +627,63 @@ const spec = {
         summary: 'クリック記録',
         requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { code: { type: 'string' }, url: { type: 'string' } }, required: ['code'] } } } },
         responses: { '201': { description: 'Recorded' } },
+      },
+    },
+    '/api/incoming-media/{accountId}/{messageId}': {
+      head: {
+        tags: ['Incoming Media'],
+        summary: '受信画像のprivate metadata取得',
+        description: 'D1のaccount＋LINE message IDからprivate R2 objectを解決する。raw R2 keyは受け付けない。owner/adminまたは同一accountに固定されたincoming-media service credentialだけを許可する。',
+        security: [{ bearerAuth: [] }, { incomingMediaServiceBearer: [] }],
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'messageId', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': {
+            description: 'Metadata headers only',
+            headers: {
+              'Content-Type': { schema: { type: 'string' } },
+              'Content-Length': { schema: { type: 'integer' } },
+              'X-Content-SHA256': { schema: { type: 'string', pattern: '^[0-9a-f]{64}$' } },
+              'Cache-Control': { schema: { type: 'string', const: 'private, no-store' } },
+              'X-Content-Type-Options': { schema: { type: 'string', const: 'nosniff' } },
+            },
+          },
+          '401': { description: 'Unauthorized' },
+          '403': { description: 'Owner or admin role required' },
+          '404': { description: 'Account/message/object not found' },
+          '503': { description: 'D1/R2 error or integrity metadata mismatch' },
+        },
+      },
+    },
+    '/api/incoming-media/{accountId}/{messageId}/content': {
+      get: {
+        tags: ['Incoming Media'],
+        summary: '受信画像のprivate content取得',
+        description: '認証必須。owner/adminまたは同一accountに固定されたincoming-media service credentialだけを許可し、D1で解決した1 objectだけをstreamしてprivate/no-storeで返す。',
+        security: [{ bearerAuth: [] }, { incomingMediaServiceBearer: [] }],
+        parameters: [
+          { name: 'accountId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'messageId', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': {
+            description: 'Image bytes',
+            headers: {
+              'Content-Type': { schema: { type: 'string' } },
+              'Content-Length': { schema: { type: 'integer' } },
+              'X-Content-SHA256': { schema: { type: 'string', pattern: '^[0-9a-f]{64}$' } },
+              'Cache-Control': { schema: { type: 'string', const: 'private, no-store' } },
+              'X-Content-Type-Options': { schema: { type: 'string', const: 'nosniff' } },
+            },
+            content: { 'image/*': { schema: { type: 'string', format: 'binary' } } },
+          },
+          '401': { description: 'Unauthorized' },
+          '403': { description: 'Owner or admin role required' },
+          '404': { description: 'Account/message/object not found' },
+          '503': { description: 'D1/R2 error or integrity metadata mismatch' },
+        },
       },
     },
     // ── Webhook ─────────────────────────────────────────────────────────────
@@ -991,6 +1101,7 @@ const spec = {
     { name: 'LINE Accounts', description: 'マルチLINEアカウント管理' },
     { name: 'Conversions', description: 'コンバージョン計測' },
     { name: 'Affiliates', description: 'アフィリエイト管理' },
+    { name: 'Incoming Media', description: 'LINEから受信したprivate画像の認証付きread-only取得' },
     { name: 'Forms', description: 'フォーム（LIFF 内で回答）' },
     { name: 'Links', description: '流入経路(/r) とクリック計測(/t) — 役割が違うので取り違えないこと' },
     { name: 'Webinars', description: 'オートウェビナー（動画・CTA・コメント・分析）' },
