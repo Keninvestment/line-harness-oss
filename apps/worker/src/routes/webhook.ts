@@ -13,12 +13,14 @@ import {
   jstNow,
   getEntryRouteByRefCode,
   getMessageTemplateById,
+  getForwardRawUrl,
 } from '@line-crm/db';
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { matchAndReply } from '../services/auto-reply.js';
 import { buildMessage } from '../services/step-delivery.js';
 import { pushImmediateFirstStep } from '../services/immediate-first-step.js';
+import { forwardRawBody } from '../services/raw-forward.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -144,6 +146,25 @@ webhook.post('/webhook', async (c) => {
   if (!valid) {
     console.error('Invalid LINE signature');
     return c.json({ status: 'ok' }, 200);
+  }
+
+  // Start forwarding only after signature validation identifies an account,
+  // but before parsing. The exact body text is therefore still opaque and
+  // untouched. This task is independent from Harness event processing.
+  if (matchedAccountId) {
+    const accountId = matchedAccountId;
+    c.executionCtx.waitUntil(
+      (async () => {
+        try {
+          const forwardUrl = await getForwardRawUrl(db, accountId);
+          if (forwardUrl) await forwardRawBody(forwardUrl, rawBody, signature);
+        } catch {
+          // A settings lookup failure must not change the webhook response or
+          // disclose the account, destination, signature, or request body.
+          console.error('[webhook] raw forwarding lookup failed');
+        }
+      })(),
+    );
   }
 
   let body: WebhookRequestBody;

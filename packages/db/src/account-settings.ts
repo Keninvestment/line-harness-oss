@@ -145,3 +145,49 @@ export async function setTrackedLinkBaseUrl(
 ): Promise<void> {
   return setUrlSetting(db, accountId, TRACKED_LINK_BASE_URL_KEY, value);
 }
+
+// Per-account destination for forwarding the original LINE webhook request.
+// This uses dedicated storage rather than setUrlSetting because an external
+// webhook URL is opaque: a trailing slash can change how the receiver routes it.
+const FORWARD_RAW_URL_KEY = 'forward_raw_url';
+
+export async function getForwardRawUrl(
+  db: D1Database,
+  accountId: string,
+): Promise<string | null> {
+  return getUrlSetting(db, accountId, FORWARD_RAW_URL_KEY);
+}
+
+export async function setForwardRawUrl(
+  db: D1Database,
+  accountId: string,
+  value: string,
+): Promise<void> {
+  const trimmed = value.trim();
+
+  if (trimmed === '') {
+    await db
+      .prepare('DELETE FROM account_settings WHERE line_account_id = ? AND key = ?')
+      .bind(accountId, FORWARD_RAW_URL_KEY)
+      .run();
+    return;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error('forward_raw_url must be a valid HTTPS URL');
+  }
+
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.hostname === '' ||
+    parsed.username !== '' ||
+    parsed.password !== ''
+  ) {
+    throw new Error('forward_raw_url must be an HTTPS URL without userinfo');
+  }
+
+  await setAccountSetting(db, accountId, FORWARD_RAW_URL_KEY, JSON.stringify(trimmed));
+}

@@ -31,6 +31,7 @@ vi.mock('@line-crm/db', () => ({
   getEntryRouteByRefCode: vi.fn(),
   getMessageTemplateById: vi.fn(),
   getTemplateById: vi.fn(),
+  getForwardRawUrl: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('@line-crm/line-sdk', async () => {
@@ -56,6 +57,10 @@ vi.mock('../services/step-delivery.js', () => ({
 
 vi.mock('../services/incoming-image.js', () => incomingImageMocks);
 
+vi.mock('../services/raw-forward.js', () => ({
+  forwardRawBody: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { verifySignature } from '@line-crm/line-sdk';
 import {
   addTagToFriend,
@@ -65,6 +70,7 @@ import {
   enrollFriendInScenario,
   getEntryRouteByRefCode,
   getFriendByLineUserId,
+  getForwardRawUrl,
   getLineAccounts,
   getMessageTemplateById,
   getScenarioSteps,
@@ -76,6 +82,7 @@ import {
   upsertFriend,
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
+import { forwardRawBody } from '../services/raw-forward.js';
 import { webhook } from './webhook.js';
 
 function setupApp() {
@@ -96,9 +103,16 @@ const baseExecutionCtx = {
   props: {},
 } as unknown as ExecutionContext;
 
+async function drainWaitUntil(executionCtx: ExecutionContext): Promise<void> {
+  const tasks = vi.mocked(executionCtx.waitUntil).mock.calls.map(([task]) => task);
+  await Promise.all(tasks);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getLineAccounts).mockResolvedValue([]);
+  vi.mocked(getForwardRawUrl).mockResolvedValue(null);
+  vi.mocked(forwardRawBody).mockResolvedValue(undefined);
 });
 
 describe('POST /webhook — DoS defenses (#104)', () => {
@@ -257,8 +271,7 @@ describe('POST /webhook — postback events', () => {
     );
 
     expect(res.status).toBe(200);
-    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
-    await processing;
+    await drainWaitUntil(executionCtx);
 
     // No auto-reply matched — the reply token must be handed to the event bus
     // so automations can still use it for free reply delivery.
@@ -350,8 +363,7 @@ describe('POST /webhook — postback events', () => {
     );
 
     expect(res.status).toBe(200);
-    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
-    await processing;
+    await drainWaitUntil(executionCtx);
 
     // Silent rule: no reply sent, but matched=true and the unconsumed reply
     // token still reaches the event bus (rich menu tap → silent + add_tag flow).
@@ -451,8 +463,7 @@ describe('POST /webhook — first-contact existing friends', () => {
     );
 
     expect(res.status).toBe(200);
-    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
-    await processing;
+    await drainWaitUntil(executionCtx);
 
     expect(lineClientMocks.getProfile).toHaveBeenCalledWith('U-existing');
     expect(upsertFriend).toHaveBeenCalledWith(db, {
@@ -547,8 +558,7 @@ describe('POST /webhook — private incoming image preservation', () => {
     }, executionCtx);
 
     expect(res.status).toBe(200);
-    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
-    await processing;
+    await drainWaitUntil(executionCtx);
     expect(incomingImageMocks.fetchAndStoreIncomingImage).toHaveBeenCalledWith({
       db,
       r2,
@@ -560,5 +570,107 @@ describe('POST /webhook — private incoming image preservation', () => {
     });
     expect(getFriendByLineUserId).not.toHaveBeenCalled();
     expect(upsertFriend).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /webhook — per-account raw forwarding', () => {
+  const account = {
+    id: 'acc-forward',
+    is_active: 1,
+    channel_secret: 'env-default-secret',
+    channel_access_token: 'account-token',
+  } as unknown as Awaited<ReturnType<typeof getLineAccounts>>[number];
+
+  function executionContext(): ExecutionContext {
+    return {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+  }
+
+  test('forwards exact pre-parse body after signature validation and account match', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([account]);
+    vi.mocked(getForwardRawUrl).mockResolvedValue('https://saas.example.com/webhook/');
+    const rawBody = '  {"events":[]}  ';
+    const signature = `${'A'.repeat(43)}=`;
+    const ctx = executionContext();
+
+    const res = await setupApp().request('/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Line-Signature': signature },
+      body: rawBody,
+    }, baseEnv, ctx);
+
+    expect(res.status).toBe(200);
+    expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
+    await drainWaitUntil(ctx);
+    expect(getForwardRawUrl).toHaveBeenCalledWith(baseEnv.DB, 'acc-forward');
+    expect(forwardRawBody).toHaveBeenCalledWith(
+      'https://saas.example.com/webhook/', rawBody, signature,
+    );
+  });
+
+  test('schedules forwarding before JSON parsing and contains malformed JSON failure', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([account]);
+    vi.mocked(getForwardRawUrl).mockResolvedValue('https://saas.example.com/webhook');
+    const rawBody = '{malformed';
+    const signature = `${'B'.repeat(43)}=`;
+    const ctx = executionContext();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await setupApp().request('/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Line-Signature': signature },
+      body: rawBody,
+    }, baseEnv, ctx);
+
+    expect(res.status).toBe(200);
+    expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
+    await drainWaitUntil(ctx);
+    expect(forwardRawBody).toHaveBeenCalledWith(
+      'https://saas.example.com/webhook', rawBody, signature,
+    );
+    errorSpy.mockRestore();
+  });
+
+  test('does not forward without matchedAccountId even when env signature is valid', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([]);
+    const ctx = executionContext();
+
+    const res = await setupApp().request('/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Line-Signature': `${'C'.repeat(43)}=` },
+      body: '{"events":[]}',
+    }, baseEnv, ctx);
+
+    expect(res.status).toBe(200);
+    await drainWaitUntil(ctx);
+    expect(getForwardRawUrl).not.toHaveBeenCalled();
+    expect(forwardRawBody).not.toHaveBeenCalled();
+  });
+
+  test('lookup failure stays independent and logs no account or payload data', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([account]);
+    vi.mocked(getForwardRawUrl).mockRejectedValue(new Error('D1 secret detail'));
+    const ctx = executionContext();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await setupApp().request('/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Line-Signature': `${'D'.repeat(43)}=` },
+      body: '{"events":[]}',
+    }, baseEnv, ctx);
+
+    expect(res.status).toBe(200);
+    await expect(drainWaitUntil(ctx)).resolves.toBeUndefined();
+    expect(forwardRawBody).not.toHaveBeenCalled();
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('acc-forward');
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('D1 secret detail');
+    errorSpy.mockRestore();
   });
 });

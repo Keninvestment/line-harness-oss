@@ -13,6 +13,8 @@ const dbMocks = {
   updateLineAccountFields: vi.fn(),
   updateLineAccountOrder: vi.fn(),
   deleteLineAccount: vi.fn(),
+  getForwardRawUrl: vi.fn(),
+  setForwardRawUrl: vi.fn(),
 };
 vi.mock('@line-crm/db', () => dbMocks);
 
@@ -127,6 +129,87 @@ describe('GET /api/line-accounts/:id/follower-insight', () => {
 
     expect(res.status).toBe(400);
     expect(lineClientMocks.getFollowersInsight).not.toHaveBeenCalled();
+  });
+});
+
+describe('forward_raw_url settings', () => {
+  test('admin can read the configured target', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(fakeAccount);
+    dbMocks.getForwardRawUrl.mockResolvedValue('https://saas.example.com/webhook/');
+    const res = await setupApp('admin').request('/api/line-accounts/acc-1/settings/forward-raw-url');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, data: 'https://saas.example.com/webhook/' });
+  });
+
+  test('staff cannot read the target', async () => {
+    const res = await setupApp('staff').request('/api/line-accounts/acc-1/settings/forward-raw-url');
+    expect(res.status).toBe(403);
+    expect(dbMocks.getForwardRawUrl).not.toHaveBeenCalled();
+  });
+
+  test('owner can set the target', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(fakeAccount);
+    dbMocks.setForwardRawUrl.mockResolvedValue(undefined);
+    const res = await setupApp('owner').request('/api/line-accounts/acc-1/settings/forward-raw-url', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 'https://saas.example.com/webhook/' }),
+    });
+    expect(res.status).toBe(200);
+    expect(dbMocks.setForwardRawUrl).toHaveBeenCalledWith(
+      expect.anything(), 'acc-1', 'https://saas.example.com/webhook/',
+    );
+  });
+
+  test('PUT rejects a missing or non-string value instead of clearing silently', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(fakeAccount);
+    const res = await setupApp('owner').request('/api/line-accounts/acc-1/settings/forward-raw-url', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 123 }),
+    });
+    expect(res.status).toBe(400);
+    expect(dbMocks.setForwardRawUrl).not.toHaveBeenCalled();
+  });
+
+  test('PUT surfaces URL validation errors', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(fakeAccount);
+    dbMocks.setForwardRawUrl.mockRejectedValue(new Error('forward_raw_url must be an HTTPS URL'));
+    const res = await setupApp('owner').request('/api/line-accounts/acc-1/settings/forward-raw-url', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 'http://unsafe.example.com' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ success: false, error: 'forward_raw_url must be an HTTPS URL' });
+  });
+
+  test('admin cannot mutate the target', async () => {
+    const res = await setupApp('admin').request('/api/line-accounts/acc-1/settings/forward-raw-url', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 'https://saas.example.com/webhook' }),
+    });
+    expect(res.status).toBe(403);
+    expect(dbMocks.setForwardRawUrl).not.toHaveBeenCalled();
+  });
+
+  test('owner can explicitly clear the target', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(fakeAccount);
+    dbMocks.setForwardRawUrl.mockResolvedValue(undefined);
+    const res = await setupApp('owner').request('/api/line-accounts/acc-1/settings/forward-raw-url', {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(200);
+    expect(dbMocks.setForwardRawUrl).toHaveBeenCalledWith(expect.anything(), 'acc-1', '');
+  });
+
+  test('missing account returns 404 without reading or changing settings', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(null);
+    const res = await setupApp('owner').request('/api/line-accounts/missing/settings/forward-raw-url');
+    expect(res.status).toBe(404);
+    expect(dbMocks.getForwardRawUrl).not.toHaveBeenCalled();
+    expect(dbMocks.setForwardRawUrl).not.toHaveBeenCalled();
   });
 });
 
