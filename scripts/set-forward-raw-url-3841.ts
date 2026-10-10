@@ -40,6 +40,8 @@ export function parseHarnessApiKey(text: string): string {
 }
 
 export function loadHarnessApiKey(): string {
+  const fromEnv = process.env.LINE_HARNESS_API_KEY?.trim();
+  if (fromEnv) return parseHarnessApiKey(`LINE_HARNESS_API_KEY=${fromEnv}`);
   assertProtectedFile(TOKEN_FILE);
   return parseHarnessApiKey(readFileSync(TOKEN_FILE, 'utf8'));
 }
