@@ -51,3 +51,11 @@ pnpm exec tsx scripts/set-forward-raw-url-3841.ts ACCOUNT_ID --clear
 ```
 
 The setter reads only `LINE_HARNESS_API_KEY` from `/Users/kensmba/.line-harness/.env.local`, performs exactly one PUT or DELETE followed by one GET, and reports only account id, set state, scheme, host, and a SHA-256 of path plus query.
+
+## Inspect the failed forwarding window (read-only)
+
+```sh
+pnpm exec tsx scripts/cf-logs-3841-forward-window.ts --from 2026-10-12T06:01:28Z --to 2026-10-12T06:09:30Z
+```
+
+The window must be positive and no longer than two hours. The script first reads Worker observability settings and stops successfully with `logs_unavailable=true` when logging is disabled. Otherwise it makes one read-only Workers Observability telemetry query. It performs no retries, allows at most five API calls, applies a 60-second deadline and 2 MiB response limit to every call, and prints only observability booleans/numbers plus aggregate `/webhook`, fixed forwarding-failure, exception/outcome, and per-minute counts. It never prints event bodies, headers, full URLs, user identifiers, or raw log lines. When `head_sampling_rate` is less than `1`, the aggregates cover only the sampled observations and are not a complete invocation count.
