@@ -52,6 +52,15 @@ pnpm exec tsx scripts/set-forward-raw-url-3841.ts ACCOUNT_ID --clear
 
 The setter reads only `LINE_HARNESS_API_KEY` from `/Users/kensmba/.line-harness/.env.local`, performs exactly one PUT or DELETE followed by one GET, and reports only account id, set state, scheme, host, and a SHA-256 of path plus query.
 
+## Probe the UTAGE webhook response
+
+```sh
+pnpm exec tsx scripts/utage-probe-3841.ts --channel-id 1234567890 --url-file /absolute/path/to/url.txt --approval-id 3841-PR-YYYYMMDD
+pnpm exec tsx scripts/utage-probe-3841.ts --channel-id 1234567890 --url-file /absolute/path/to/url.txt --approval-id 3841-PR-YYYYMMDD --signature bad
+```
+
+Run this networked probe only on KEN's terminal after approval. Each invocation performs one D1 SELECT, one LINE bot-info GET, and exactly one UTAGE POST with a 10-second timeout, no retry, and no redirect following. The URL file must be a regular, non-symlink file with mode 0600. Output is sanitized JSON containing only the destination validation result, response metadata, host, and a SHA-256 of path plus query; it never prints credentials, the LINE user ID, URL path/query, response body, or redirect location.
+
 ## Inspect the failed forwarding window (read-only)
 
 ```sh

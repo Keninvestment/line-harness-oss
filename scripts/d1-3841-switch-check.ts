@@ -11,8 +11,8 @@ const ACCOUNT_ID = '67907592fdf596376bc2097e14a6563a';
 const DATABASE_ID = 'c19584d7-e9f1-4d46-83c5-6c0ba96561d1';
 const MAX_BYTES = 131_072;
 
-type Scalar = string | number | null;
-type Row = Record<string, Scalar>;
+export type Scalar = string | number | null;
+export type Row = Record<string, Scalar>;
 export type Query = (sql: string, params: Scalar[]) => Promise<Row[]>;
 
 export class SwitchCheckStop extends Error {
