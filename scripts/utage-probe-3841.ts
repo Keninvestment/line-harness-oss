@@ -17,6 +17,8 @@ const LINE_USER_ID = /^U[0-9a-f]{32}$/;
 const APPROVAL_ID = /^3841-PR-[0-9]{8}$/;
 const MAX_RESPONSE_BYTES = 1_048_576;
 const TIMEOUT_MS = 10_000;
+const HARNESS_HOSTNAME = 'line-harness.family8office.workers.dev';
+const HARNESS_PATH = '/webhook';
 
 export class UtageProbeStop extends Error {
   constructor(readonly code: string) { super(code); }
@@ -41,10 +43,14 @@ interface Arguments {
   urlFile: string;
   approvalId: string;
   badSignature: boolean;
+  noUserAgent: boolean;
+  viaHarness: boolean;
 }
 
 export interface ProbeResult {
   approval_id: string;
+  target: 'utage' | 'harness';
+  user_agent_sent: boolean;
   host: string;
   path_sha256: string;
   destination_ok: boolean;
@@ -61,7 +67,7 @@ function sha256(value: string): string {
 }
 
 function parseArguments(raw: string[]): Arguments {
-  if (raw.length !== 6 && raw.length !== 8) throw new UtageProbeStop('arguments');
+  if (raw.length < 6) throw new UtageProbeStop('arguments');
   if (raw[0] !== '--channel-id' || raw[2] !== '--url-file' || raw[4] !== '--approval-id') {
     throw new UtageProbeStop('arguments');
   }
@@ -71,11 +77,25 @@ function parseArguments(raw: string[]): Arguments {
   if (!/^[0-9]+$/.test(channelId)) throw new UtageProbeStop('channel_id');
   if (!urlFile) throw new UtageProbeStop('url_file');
   if (!APPROVAL_ID.test(approvalId)) throw new UtageProbeStop('approval_id');
-  const badSignature = raw.length === 8;
-  if (badSignature && (raw[6] !== '--signature' || raw[7] !== 'bad')) {
-    throw new UtageProbeStop('signature_mode');
+  let badSignature = false;
+  let noUserAgent = false;
+  let viaHarness = false;
+  for (let index = 6; index < raw.length;) {
+    if (raw[index] === '--signature' && raw[index + 1] === 'bad' && !badSignature) {
+      badSignature = true;
+      index += 2;
+    } else if (raw[index] === '--no-user-agent' && !noUserAgent) {
+      noUserAgent = true;
+      index += 1;
+    } else if (raw[index] === '--via-harness' && !viaHarness) {
+      viaHarness = true;
+      index += 1;
+    } else {
+      throw new UtageProbeStop('arguments');
+    }
   }
-  return { channelId, urlFile, approvalId, badSignature };
+  if (viaHarness && (badSignature || noUserAgent)) throw new UtageProbeStop('mode_conflict');
+  return { channelId, urlFile, approvalId, badSignature, noUserAgent, viaHarness };
 }
 
 export function loadTarget(path: string): ProbeTarget {
@@ -156,22 +176,32 @@ export async function run(raw: string[], deps: ProbeDependencies): Promise<Probe
   const body = Buffer.from(JSON.stringify({ destination: userId, events: [] }), 'utf8');
   const correctSignature = computeSignature(secret, body);
   const signature = args.badSignature ? wrongSignature(correctSignature) : correctSignature;
+  const requestTarget = args.viaHarness
+    ? { hostname: HARNESS_HOSTNAME, path: HARNESS_PATH }
+    : { hostname: target.hostname, path: target.path };
+  const headers: Record<string, string | number> = args.viaHarness
+    ? {
+      'Content-Type': 'application/json',
+      'X-Line-Signature': signature,
+    }
+    : {
+      'Content-Type': 'application/json',
+      'X-Line-Signature': signature,
+      ...(!args.noUserAgent && { 'User-Agent': 'LineBotWebhook/2.0' }),
+      'Accept-Encoding': 'identity',
+      'Content-Length': body.length,
+    };
 
   const startedAt = deps.now();
   const response = await deps.utageRequest({
-    hostname: target.hostname, method: 'POST', path: target.path,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Line-Signature': signature,
-      'User-Agent': 'LineBotWebhook/2.0',
-      'Accept-Encoding': 'identity',
-      'Content-Length': body.length,
-    },
+    hostname: requestTarget.hostname, method: 'POST', path: requestTarget.path, headers,
     body, maxBytes: MAX_RESPONSE_BYTES,
   }, startedAt + TIMEOUT_MS);
   const elapsedMs = Math.max(0, deps.now() - startedAt);
   return {
     approval_id: args.approvalId,
+    target: args.viaHarness ? 'harness' : 'utage',
+    user_agent_sent: !args.viaHarness && !args.noUserAgent,
     host: target.hostname,
     path_sha256: target.pathSha256,
     destination_ok: true,

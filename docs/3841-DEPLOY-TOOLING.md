@@ -57,9 +57,28 @@ The setter reads only `LINE_HARNESS_API_KEY` from `/Users/kensmba/.line-harness/
 ```sh
 pnpm exec tsx scripts/utage-probe-3841.ts --channel-id 1234567890 --url-file /absolute/path/to/url.txt --approval-id 3841-PR-YYYYMMDD
 pnpm exec tsx scripts/utage-probe-3841.ts --channel-id 1234567890 --url-file /absolute/path/to/url.txt --approval-id 3841-PR-YYYYMMDD --signature bad
+pnpm exec tsx scripts/utage-probe-3841.ts --channel-id 1234567890 --url-file /absolute/path/to/url.txt --approval-id 3841-PR-YYYYMMDD --no-user-agent
 ```
 
-Run this networked probe only on KEN's terminal after approval. Each invocation performs one D1 SELECT, one LINE bot-info GET, and exactly one UTAGE POST with a 10-second timeout, no retry, and no redirect following. The URL file must be a regular, non-symlink file with mode 0600. Output is sanitized JSON containing only the destination validation result, response metadata, host, and a SHA-256 of path plus query; it never prints credentials, the LINE user ID, URL path/query, response body, or redirect location.
+Run this networked probe only on KEN's terminal after approval. Each invocation performs one D1 SELECT, one LINE bot-info GET, and exactly one POST with a 10-second timeout, no retry, and no redirect following. The default and `--no-user-agent` modes POST to the validated UTAGE URL. The latter omits the `User-Agent` header entirely (with no `user-agent` key in any casing).
+
+### Mode B: via Harness
+
+In a separate terminal, start this companion read-only live log command before running the probe:
+
+```sh
+(set -a; . ~/.line-harness/.env.local; set +a; cd ~/.line-harness-wt/3841-deploy-tooling && ./node_modules/.bin/wrangler tail line-harness --format json) | grep -E 'raw forwarding|"outcome"'
+```
+
+It shows only our fixed `raw forwarding` log lines and outcome fields. Then run:
+
+```sh
+pnpm exec tsx scripts/utage-probe-3841.ts --channel-id 1234567890 --url-file /absolute/path/to/url.txt --approval-id 3841-PR-YYYYMMDD --via-harness
+```
+
+This mode sends exactly one correctly signed POST to `https://line-harness.family8office.workers.dev/webhook`, with only `Content-Type` and `X-Line-Signature` explicitly set, and does not contact the URL from the URL file. A Harness response status of 200 is expected. `--via-harness` cannot be combined with `--signature bad` or `--no-user-agent`.
+
+In every mode, the URL file is still required and must be a regular, non-symlink file with mode 0600 whose URL passes the UTAGE host validation. Output is sanitized JSON containing `target` (`utage` or `harness`), `user_agent_sent`, the destination validation result, response metadata, the validated UTAGE host, and a SHA-256 of its path plus query. It never prints credentials, the LINE user ID, URL path/query, response body, or redirect location.
 
 ## Inspect the failed forwarding window (read-only)
 
